@@ -18,7 +18,8 @@ class NicknameStates(StatesGroup):
 
 class TelegramBot:
     def __init__(self, token: str, db: Database):
-        self.bot = Bot(token=token, parse_mode=ParseMode.HTML)
+        from aiogram.client.default import DefaultBotProperties
+        self.bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.storage = MemoryStorage()
         self.dp = Dispatcher(storage=self.storage)
         self.router = Router()
