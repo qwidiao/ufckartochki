@@ -1,18 +1,27 @@
+# telegram_bot.py
 import asyncio
 import random
 import time
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.filters import Command, ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER
+from aiogram import Bot, Dispatcher, types, executor
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from aiogram.dispatcher.filters import Text, Command
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 import config
 from database import Database
 
+
+class NicknameStates(StatesGroup):
+    waiting_for_nickname = State()
+
+
 class TelegramBot:
     def __init__(self, token: str, db: Database):
-        self.bot = Bot(token=token)
-        self.dp = Dispatcher()
+        self.bot = Bot(token=token, parse_mode='HTML')
+        self.storage = MemoryStorage()
+        self.dp = Dispatcher(self.bot, storage=self.storage)
         self.db = db
-        self.waiting_for_nickname = set()
         self.user_cards_pages = {}
         
         self.known_text_commands = {
@@ -26,118 +35,63 @@ class TelegramBot:
         self.register_handlers()
 
     def register_handlers(self):
-        self.dp.message.register(self.start_handler, Command("start"))
+        # Команды
+        self.dp.register_message_handler(self.start_handler, commands=['start'])
+        self.dp.register_message_handler(self.card_handler, commands=['card'])
+        self.dp.register_message_handler(self.stats_handler, commands=['stats'])
+        self.dp.register_message_handler(self.nick_handler, commands=['nick'])
+        self.dp.register_message_handler(self.help_handler, commands=['help'])
+        self.dp.register_message_handler(self.tops_handler, commands=['top'])
+        self.dp.register_message_handler(self.mycards_handler, commands=['mycards'])
+        self.dp.register_message_handler(self.promo_code_handler, commands=['code'])
+        self.dp.register_message_handler(self.code_create_handler, commands=['codecreate'])
+        self.dp.register_message_handler(self.link_handler, commands=['link'])
         
-        self.dp.message.register(self.card_handler, Command("card"))
-        self.dp.message.register(
+        # Текстовые команды
+        self.dp.register_message_handler(
             self.card_handler, 
-            F.text & F.text.lower().in_(["карточка", "карта", "карту", "карт", "боец", "карточку"])
+            lambda msg: msg.text and msg.text.lower() in ["карточка", "карта", "карту", "карт", "боец", "карточку"]
         )
-        
-        self.dp.message.register(self.stats_handler, Command("stats"))
-        self.dp.message.register(
+        self.dp.register_message_handler(
             self.stats_handler,
-            F.text & F.text.lower().in_(["статистика", "стата", "стат", "статс", "статистику"])
+            lambda msg: msg.text and msg.text.lower() in ["статистика", "стата", "стат", "статс", "статистику"]
         )
-        
-        self.dp.message.register(self.nick_handler, Command("nick"))
-        self.dp.message.register(
+        self.dp.register_message_handler(
             self.nick_handler,
-            F.text & F.text.lower().in_(["ник", "никнейм"])
+            lambda msg: msg.text and msg.text.lower() in ["ник", "никнейм"]
         )
-        
-        self.dp.message.register(self.help_handler, Command("help"))
-        self.dp.message.register(
+        self.dp.register_message_handler(
             self.help_handler,
-            F.text & F.text.lower().in_(["помощь", "хелп", "хэлп"])
+            lambda msg: msg.text and msg.text.lower() in ["помощь", "хелп", "хэлп"]
         )
-        
-        self.dp.message.register(self.tops_handler, Command("top"))
-        self.dp.message.register(
+        self.dp.register_message_handler(
             self.tops_handler,
-            F.text & F.text.lower().in_(["топ", "топы", "богачи", "топа"])
+            lambda msg: msg.text and msg.text.lower() in ["топ", "топы", "богачи", "топа"]
         )
-        
-        self.dp.message.register(self.mycards_handler, Command("mycards"))
-        self.dp.message.register(
+        self.dp.register_message_handler(
             self.mycards_handler,
-            F.text & F.text.lower().in_(["мои карты", "коллекция", "мой сбор", "бойцы"])
+            lambda msg: msg.text and msg.text.lower() in ["мои карты", "коллекция", "мой сбор", "бойцы"]
         )
         
-        self.dp.message.register(self.promo_code_handler, Command("code"))
-        self.dp.message.register(self.code_create_handler, Command("codecreate"))
-        self.dp.message.register(self.code_stats_handler, Command("codestats"))
+        # Обработчик ввода никнейма (state)
+        self.dp.register_message_handler(self.process_nickname_input, state=NicknameStates.waiting_for_nickname)
         
-        self.dp.message.register(self.link_handler, Command("link"))
-
-        self.dp.callback_query.register(self.start_game_handler, F.data == "start_game")
-        self.dp.callback_query.register(self.mycards_next_handler, F.data == "mycards_next")
-        self.dp.callback_query.register(self.mycards_prev_handler, F.data == "mycards_prev")
-        self.dp.callback_query.register(self.mycards_close_handler, F.data == "mycards_close")
-
-        self.dp.message.register(self.text_handler, F.chat.type == "private")
-
-        self.dp.chat_member.register(self.on_chat_member_update, ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
+        # Callback handlers
+        self.dp.register_callback_query_handler(self.start_game_handler, lambda c: c.data == "start_game")
+        self.dp.register_callback_query_handler(self.mycards_next_handler, lambda c: c.data == "mycards_next")
+        self.dp.register_callback_query_handler(self.mycards_prev_handler, lambda c: c.data == "mycards_prev")
+        self.dp.register_callback_query_handler(self.mycards_close_handler, lambda c: c.data == "mycards_close")
         
-        self.dp.message.register(self.on_new_chat_members, F.new_chat_members)
-        
-        self.dp.message.register(self.ignore_chat_messages)
+        # Обработчик неизвестных сообщений в ЛС
+        self.dp.register_message_handler(self.text_handler, lambda msg: msg.chat.type == "private")
 
     async def link_handler(self, message: types.Message):
         if message.chat.type != "private":
-            return await message.reply("<b>❌ команда /link доступна только в личных сообщениях с ботом</b>", parse_mode='HTML')
+            return await message.reply("<b>❌ команда /link доступна только в личных сообщениях с ботом</b>")
         else:
-            return await message.reply('<b>🚀 в разработке</b>', parse_mode='HTML')
-
-    async def on_chat_member_update(self, event: types.ChatMemberUpdated):
-        print(f"DEBUG: Chat member updated - {event.new_chat_member.user.first_name}")
-        
-        if event.new_chat_member.user.id == self.bot.id:
-            welcome_text = """<b>🤝 йо, спасибо что добавил меня, я сделаю это местечко круче!</b>
-
-<b>• открывай карточки прямо тут, используя команду /card</b>
-<b>• бот будет приветствовать новых участников чата</b>
-
-<i>назначьте бота админом, чтобы он работал корректно</i>"""
-            await event.answer(welcome_text, parse_mode='HTML')
-        else:
-            user = event.new_chat_member.user
-            user_link = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
-            welcome_text = f"""👋 <b>добро пожаловать в чат, {user_link}!
-
-• общайся и играй - 2 в 1!</b>
-
-<i>некоторые команды бота недоступны в чате</i>"""
-            await event.answer(welcome_text, parse_mode='HTML')
-
-    async def on_new_chat_members(self, message: types.Message):
-        print(f"DEBUG: new chat member - {[user.first_name for user in message.new_chat_members]}")
-        
-        for new_member in message.new_chat_members:
-            if new_member.id == self.bot.id:
-                welcome_text = """🤝 <b>йо, спасибо что добавил меня, я сделаю это местечко круче!</b>
-
-<b>• открывай карточки прямо тут, используя команду /card
-• бот будет приветствовать новых участников чата</b>
-
-<i>назначьте бота админом, чтобы он работал корректно</i>"""
-                await message.reply(welcome_text, parse_mode='HTML')
-            else:
-                user_link = f'<a href="tg://user?id={new_member.id}">{new_member.first_name}</a>'
-                welcome_text = f"""👋 <b>добро пожаловать в чат, {user_link}!
-
-• общайся и играй - 2 в 1!</b>
-
-<i>некоторые команды бота недоступны в чате</i>"""
-                await message.reply(welcome_text, parse_mode='HTML')
-
-    async def ignore_chat_messages(self, message: types.Message):
-        pass
+            return await message.reply('<b>🚀 в разработке</b>')
 
     async def text_handler(self, message: types.Message):
-        if message.from_user.id in self.waiting_for_nickname:
-            await self.process_nickname_input(message)
-            return
         text = (message.text or "").lower().strip()
         
         if text in self.known_text_commands:
@@ -145,26 +99,25 @@ class TelegramBot:
         
         await message.reply(
             "<b>❌ неизвестная команда</b>\n\n"
-            "<i>посмотреть список команд можно с помощью /help</i>", 
-            parse_mode="HTML"
+            "<i>посмотреть список команд можно с помощью /help</i>"
         )
     
-    async def process_nickname_input(self, message: types.Message):
+    async def process_nickname_input(self, message: types.Message, state: FSMContext):
         nickname = message.text.strip()
         
         db_user = self.db.get_user(tg_id=message.from_user.id)
         if not db_user:
-            self.waiting_for_nickname.discard(message.from_user.id)
+            await state.finish()
             return await message.reply("❌ <b>ошибка - пользователь не найден</b>")
         
         if len(nickname) < 3:
-            return await message.reply("❌ <b>слишком короткий никнейм (минимум 3 символа)</b>\n\n✏️ <b>попробуйте еще раз:</b>", parse_mode="HTML")
+            return await message.reply("❌ <b>слишком короткий никнейм (минимум 3 символа)</b>\n\n✏️ <b>попробуйте еще раз:</b>")
         
         if len(nickname) > 20:
-            return await message.reply("❌ <b>слишком длинный никнейм (максимум 20 символов)</b>\n\n✏️ <b>попробуйте еще раз:</b>", parse_mode="HTML")
+            return await message.reply("❌ <b>слишком длинный никнейм (максимум 20 символов)</b>\n\n✏️ <b>попробуйте еще раз:</b>")
         
         if not nickname.replace('_', '').isalnum():
-            return await message.reply("❌ <b>никнейм может содержать только буквы, цифры и подчеркивания</b>\n\n✏️ <b>попробуйте еще раз:</b>", parse_mode="HTML")
+            return await message.reply("❌ <b>никнейм может содержать только буквы, цифры и подчеркивания</b>\n\n✏️ <b>попробуйте еще раз:</b>")
         
         current_nickname = self.db.get_nickname(db_user[0])
         is_first_nickname = current_nickname is None
@@ -172,7 +125,7 @@ class TelegramBot:
         success, result_message = self.db.set_nickname(db_user[0], nickname)
         
         if success:
-            self.waiting_for_nickname.discard(message.from_user.id)
+            await state.finish()
             if is_first_nickname:
                 user_link = f'<a href="tg://user?id={message.from_user.id}">{nickname}</a>'
                 text = f"""😎<b>приятно познакомиться, {user_link}!</b>
@@ -185,13 +138,13 @@ class TelegramBot:
             else:
                 text = f"✅ <b>никнейм успешно изменен</b>\n\n<i>новый ник - {nickname}</i>"
             
-            await message.reply(text, parse_mode="HTML")
+            await message.reply(text)
         else:
-            await message.reply(f"{result_message}\n\n", parse_mode="HTML")
+            await message.reply(f"{result_message}\n\n")
 
-    async def start_handler(self, message: types.Message):
+    async def start_handler(self, message: types.Message, state: FSMContext):
         if message.chat.type != "private":
-            return await message.reply("<b>❌ эту команду нельзя использовать в чате</b>\n\n<i>используйте ее в личных сообщениях с ботом</i>", parse_mode='HTML')
+            return await message.reply("<b>❌ эту команду нельзя использовать в чате</b>\n\n<i>используйте ее в личных сообщениях с ботом</i>")
 
         db_user = self.db.get_user(tg_id=message.from_user.id)
         
@@ -212,11 +165,10 @@ class TelegramBot:
 
 чтобы начать играть в бота, нажмите на кнопку «начать»"""
             
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 начать", callback_data="start_game")]
-            ])
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton(text="🚀 начать", callback_data="start_game"))
             
-            return await message.reply(welcome_text, reply_markup=keyboard, parse_mode='HTML')
+            return await message.reply(welcome_text, reply_markup=keyboard)
         
         current_nickname = self.db.get_nickname(db_user[0])
         
@@ -225,11 +177,10 @@ class TelegramBot:
 
 <i>вы всегда сможете изменить свой ник, используя команду /nick</i>"""
             
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 начать", callback_data="start_game")]
-            ])
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton(text="🚀 начать", callback_data="start_game"))
             
-            return await message.reply(text, reply_markup=keyboard, parse_mode='HTML')
+            return await message.reply(text, reply_markup=keyboard)
         
         current_time = int(time.time())
         is_first_start = (current_time - db_user[8]) < 60
@@ -243,11 +194,10 @@ class TelegramBot:
 
 <i>помощь по боту - /help</i>"""
             
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 начать", callback_data="start_game")]
-            ])
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton(text="🚀 начать", callback_data="start_game"))
             
-            return await message.reply(text, reply_markup=keyboard, parse_mode='HTML')
+            return await message.reply(text, reply_markup=keyboard)
         else:
             text = f"""<b>🤖 Привет, {current_nickname}!</b>
 
@@ -255,12 +205,11 @@ class TelegramBot:
 💬 • добавляй бота в чат, играть с друзьями круче!
 🤑 • собери всю коллекцию и стань самым богатым чуваком!</b>
 
-<i>помощь по боту - /help</i>
-"""
+<i>помощь по боту - /help</i>"""
             
-            return await message.reply(text, parse_mode='HTML')
+            return await message.reply(text)
 
-    async def start_game_handler(self, callback: types.CallbackQuery):
+    async def start_game_handler(self, callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         db_user = self.db.get_user(tg_id=user_id)
         
@@ -272,16 +221,15 @@ class TelegramBot:
         
         if current_nickname:
             await callback.message.edit_text(
-                f"<b>🤖 Привет, {current_nickname}!</b>\n\nИспользуй /card чтобы получить карточку!",
-                parse_mode='HTML'
+                f"<b>🤖 Привет, {current_nickname}!</b>\n\nИспользуй /card чтобы получить карточку!"
             )
         else:
             text = """<b>📝 напиши свой никнейм:</b>
 
 <i>вы всегда сможете изменить свой ник, используя команду /nick</i>"""
             
-            await callback.message.edit_text(text, parse_mode='HTML')
-            self.waiting_for_nickname.add(user_id)
+            await callback.message.edit_text(text)
+            await NicknameStates.waiting_for_nickname.set()
         
         await callback.answer()
 
@@ -310,7 +258,7 @@ t.me/xxxxxbot - техподдержка
 • 3 крутости: обычная, жоская и ИМБОВАЯ
 • Новые карточки дают в 2 раза больше UFCoins"""
         
-        await message.reply(help_text, parse_mode='HTML')
+        await message.reply(help_text)
 
     async def card_handler(self, message: types.Message):
         db_user = self.db.get_user(tg_id=message.from_user.id)
@@ -321,17 +269,17 @@ t.me/xxxxxbot - техподдержка
                 username=message.from_user.username or f"{message.from_user.first_name} {message.from_user.last_name or ''}"
             )
             if not db_user:
-                return await message.reply("❌ ошибка создания пользователя", parse_mode='HTML')
+                return await message.reply("❌ ошибка создания пользователя")
         
         current_nickname = self.db.get_nickname(db_user[0])
         if not current_nickname:
-            return await message.reply("❌ <b>сначала установи никнейм командой /start</b>", parse_mode='HTML')
+            return await message.reply("❌ <b>сначала установи никнейм командой /start</b>")
         
         can_send, time_remaining = self.db.can_send_card(db_user[0])
         
         if not can_send:
             time_left = self.format_time(time_remaining)
-            return await message.reply(f"🆕 <b>новую карточку можно получить через {time_left}</b>", parse_mode='HTML')
+            return await message.reply(f"🆕 <b>новую карточку можно получить через {time_left}</b>")
         
         card = random.choices(
             list(config.COOLNESS_WEIGHTS.keys()),
@@ -354,8 +302,8 @@ t.me/xxxxxbot - техподдержка
         caption += "<i>получить новую карточку можно через 3 часа</i>"
         
         try:
-            photo = FSInputFile(card["image_path"])
-            await message.reply_photo(photo, caption=caption, parse_mode='HTML')
+            photo = InputFile(card["image_path"])
+            await message.reply_photo(photo, caption=caption)
         except Exception as e:
             await message.reply(f"❌ Ошибка загрузки картинки: {str(e)}")
 
@@ -366,7 +314,7 @@ t.me/xxxxxbot - техподдержка
         
         current_nickname = self.db.get_nickname(db_user[0])
         if not current_nickname:
-            return await message.reply("❌ <b>Сначала установи никнейм командой /start</b>", parse_mode='HTML')
+            return await message.reply("❌ <b>Сначала установи никнейм командой /start</b>")
         
         cards_count, last_card_time, ufcoins, record_ufcoins, nickname = self.db.get_user_stats(db_user[0])
         can_send, time_remaining = self.db.can_send_card(db_user[0])
@@ -389,11 +337,11 @@ t.me/xxxxxbot - техподдержка
 📊 <b>прогресс в боте: {progress_percent}%</b>
 {time_text}"""
         
-        await message.reply(text, parse_mode='HTML')
+        await message.reply(text)
 
-    async def nick_handler(self, message: types.Message):
+    async def nick_handler(self, message: types.Message, state: FSMContext):
         if message.chat.type != 'private':
-            return await message.reply("❌ <b>эту команду нельзя использовать в чате</b>\n\n<i>используйте ее в личных сообщениях с ботом</i>", parse_mode='HTML')
+            return await message.reply("❌ <b>эту команду нельзя использовать в чате</b>\n\n<i>используйте ее в личных сообщениях с ботом</i>")
         
         db_user = self.db.get_user(tg_id=message.from_user.id)
         if not db_user:
@@ -406,8 +354,8 @@ t.me/xxxxxbot - техподдержка
         else:
             text = "📝 <b>напишите ваш никнейм:</b>\n\n<b>вы всегда сможете изменить свой ник, используя команду /nick</b>"
         
-        self.waiting_for_nickname.add(message.from_user.id)
-        await message.reply(text, parse_mode='HTML')
+        await NicknameStates.waiting_for_nickname.set()
+        await message.reply(text)
 
     async def tops_handler(self, message: types.Message):
         try:
@@ -432,14 +380,14 @@ t.me/xxxxxbot - техподдержка
                 record_nickname, record_coins = record_holder
                 text += f"\n🏆 <i>рекорд по UFCoins - {record_nickname}, {record_coins} UFCoins</i>"
             
-            await message.reply(text, parse_mode='HTML')
+            await message.reply(text)
             
         except Exception as e:
             await message.reply("❌ ошибка при получении топа")
 
     async def mycards_handler(self, message: types.Message):
         if message.chat.type != 'private':
-            return await message.reply("❌ <b>эта команда доступна только в личных сообщениях с ботом</b>", parse_mode='HTML')
+            return await message.reply("❌ <b>эта команда доступна только в личных сообщениях с ботом</b>")
         
         db_user = self.db.get_user(tg_id=message.from_user.id)
         if not db_user:
@@ -453,7 +401,7 @@ t.me/xxxxxbot - техподдержка
 🎴 <b>у вас пока нет карточек</b>
 
 <b>получите первую карточку командой /card</b>"""
-            return await message.reply(text, parse_mode='HTML')
+            return await message.reply(text)
         
         self.user_cards_pages[message.from_user.id] = {
             'page': 0,
@@ -489,19 +437,16 @@ t.me/xxxxxbot - техподдержка
 <b>крутость - {current_card['coolness']}</b>
 <b>стоимость - {current_card['UFCoins']} UFCoins</b>"""
         
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⬅️", callback_data="mycards_prev"),
-                InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="current_page"),
-                InlineKeyboardButton(text="➡️", callback_data="mycards_next")
-            ],
-            [
-                InlineKeyboardButton(text="❌ закрыть", callback_data="mycards_close")
-            ]
-        ])
+        keyboard = InlineKeyboardMarkup(row_width=3)
+        keyboard.add(
+            InlineKeyboardButton(text="⬅️", callback_data="mycards_prev"),
+            InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="current_page"),
+            InlineKeyboardButton(text="➡️", callback_data="mycards_next")
+        )
+        keyboard.add(InlineKeyboardButton(text="❌ закрыть", callback_data="mycards_close"))
         
         try:
-            photo = FSInputFile(current_card["image_path"])
+            photo = InputFile(current_card["image_path"])
             
             if self.user_cards_pages[user_id]['message_id']:
                 try:
@@ -512,10 +457,10 @@ t.me/xxxxxbot - техподдержка
                         reply_markup=keyboard
                     )
                 except:
-                    msg = await self.bot.send_photo(chat_id, photo, caption=text, reply_markup=keyboard, parse_mode='HTML')
+                    msg = await self.bot.send_photo(chat_id, photo, caption=text, reply_markup=keyboard)
                     self.user_cards_pages[user_id]['message_id'] = msg.message_id
             else:
-                msg = await self.bot.send_photo(chat_id, photo, caption=text, reply_markup=keyboard, parse_mode='HTML')
+                msg = await self.bot.send_photo(chat_id, photo, caption=text, reply_markup=keyboard)
                 self.user_cards_pages[user_id]['message_id'] = msg.message_id
         except Exception as e:
             await self.bot.send_message(chat_id, f"❌ ошибка загрузки картинки: {str(e)}")
@@ -562,11 +507,11 @@ t.me/xxxxxbot - техподдержка
                 return await message.reply("❌ пользователь не найден")
                 
             success, result = self.db.activate_promo_code(db_user[0], code)
-            await message.reply(result, parse_mode='HTML')
+            await message.reply(result)
         else:
             await message.reply("""🔐 <b>напишите код, который хотите использовать:</b>
 
-<i>пример:</i> <code>/code FREE</code>""", parse_mode='HTML')
+<i>пример:</i> <code>/code FREE</code>""")
 
     async def code_create_handler(self, message: types.Message):
         if message.from_user.username not in config.ADMINS and f"@{message.from_user.username}" not in config.ADMINS:
@@ -585,17 +530,11 @@ t.me/xxxxxbot - техподдержка
                 )
                 await message.reply(result)
             except ValueError:
-                await message.reply("❌ <b>неверный формат. Используйте:</b> <code>/codecreate НАЗВАНИЕ КОЛВО_МОНЕТ КОЛВО_АКТИВАЦИЙ</code>", parse_mode='HTML')
+                await message.reply("❌ <b>неверный формат. Используйте:</b> <code>/codecreate НАЗВАНИЕ КОЛВО_МОНЕТ КОЛВО_АКТИВАЦИЙ</code>")
         else:
             await message.reply("""📝 <b>введите промокод в формате: НАЗВАНИЕ КОЛВО_МОНЕТ КОЛВО_АКТИВАЦИЙ</b>
 
-<b>пример:</b> <code>/codecreate FREE 100 10</code>""", parse_mode='HTML')
-
-    async def code_stats_handler(self, message: types.Message):
-        if message.from_user.username not in config.ADMINS:
-            return await message.reply("❌ недостаточно прав")
-        
-        await message.reply("<b>📊 статистика промокодов в разработке</b>", parse_mode='HTML')
+<b>пример:</b> <code>/codecreate FREE 100 10</code>""")
 
     def format_time(self, seconds: int) -> str:
         if seconds <= 0:
@@ -612,6 +551,7 @@ t.me/xxxxxbot - техподдержка
         else:
             return f"{secs} сек"
 
-    async def run(self):
-        print("tg bot inited start polling")
-        await self.dp.start_polling(self.bot)
+    def run(self):
+        """Запуск бота через executor (для совместимости с Bothost)"""
+        print("🤖 Telegram bot starting with executor.start_polling...")
+        executor.start_polling(self.dp, skip_updates=True)
