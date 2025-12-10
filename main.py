@@ -1,3 +1,8 @@
+# main.py
+
+# ВАЖНО: Патч должен быть ПЕРВЫМ импортом!
+import executor_patch  # <-- Добавить эту строку ПЕРВОЙ
+
 import asyncio
 import time
 from database import Database
@@ -16,8 +21,6 @@ async def run_telegram_bot():
 
 async def main():
     print("🚀 Starting bot...")
-    
-    # Запускаем только Telegram бота
     print("🔧 Starting Telegram bot...")
     await run_telegram_bot()
 
