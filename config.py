@@ -6,8 +6,8 @@ load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "sync_bot.db")
 
-TG_TOKEN = os.getenv("BOT_TOKEN")  # ← будет из bothost
-VK_TOKEN = os.getenv("VK_TOKEN", "")  # ← будет из bothost
+TG_TOKEN = os.getenv("BOT_TOKEN")
+VK_TOKEN = os.getenv("VK_TOKEN", ""
 
 # ВСЁ ОСТАЛЬНОЕ БЕЗ ИЗМЕНЕНИЙ ↓
 VK_GROUP_ID = 234356723
