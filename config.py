@@ -24,9 +24,6 @@ CARD_COOLDOWN = 10800
 # Все картинки будут искаться в папке проекта
 CARDS = [
     {"id": 1, "name": "весёлый Ислам", "coolness": "обычная", "UFCoins": 50, "image_path": "веселый ислам.jpg"},
-    # ... все остальные карточки без изменений
-]CARDS = [
-    {"id": 1, "name": "весёлый Ислам", "coolness": "обычная", "UFCoins": 50, "image_path": "веселый ислам.jpg"},
     {"id": 2, "name": "Джонс с поясом", "coolness": "обычная", "UFCoins": 50, "image_path": "джонс с поясом.jpg"},
     {"id": 3, "name": "качок Джонс", "coolness": "обычная", "UFCoins": 50, "image_path": "качок джонс.jpg"},
     {"id": 4, "name": "Конор в кожанке", "coolness": "обычная", "UFCoins": 50, "image_path": "конор в дубленке.jpg"},
